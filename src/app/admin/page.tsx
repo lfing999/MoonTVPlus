@@ -12217,6 +12217,8 @@ const OPDSConfigComponent = ({
   const [cacheTTL, setCacheTTL] = useState(10 * 60 * 1000);
   const [sources, setSources] = useState<BookSource[]>([]);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [legadoImportText, setLegadoImportText] = useState('');
+  const [legadoRuleDrafts, setLegadoRuleDrafts] = useState<Record<number, string>>({});
 
   useEffect(() => {
     if (config?.OPDSConfig) {
@@ -12226,6 +12228,7 @@ const OPDSConfigComponent = ({
         (config.OPDSConfig.Sources || []).map((item, index) => ({
           id: item.id || `source_${index + 1}`,
           name: item.name || `书源 ${index + 1}`,
+          type: item.type || 'opds',
           url: item.url || '',
           enabled: item.enabled !== false,
           authMode: item.authMode || 'none',
@@ -12236,9 +12239,11 @@ const OPDSConfigComponent = ({
           searchTemplate: item.searchTemplate || '',
           preferFormat: item.preferFormat || ['epub', 'pdf'],
           language: item.language || '',
+          legado: item.legado,
         }))
       );
       setEditingIndex(null);
+      setLegadoRuleDrafts({});
     }
   }, [config]);
 
@@ -12264,6 +12269,7 @@ const OPDSConfigComponent = ({
         {
           id: `source_${prev.length + 1}`,
           name: `书源 ${prev.length + 1}`,
+          type: 'opds',
           url: '',
           enabled: true,
           authMode: 'none',
@@ -12274,13 +12280,76 @@ const OPDSConfigComponent = ({
           searchTemplate: '',
           preferFormat: ['epub', 'pdf'],
           language: '',
+          legado: undefined,
         },
       ];
     });
   };
 
+  const makeLegadoSourceId = (name: string, url: string, index: number) => {
+    const raw = `${name}|${url}|${index}`;
+    let hash = 0;
+    for (let i = 0; i < raw.length; i += 1) {
+      hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
+    }
+    return `legado_${Math.abs(hash).toString(36)}`;
+  };
+
+  const importLegadoSources = () => {
+    try {
+      const parsed = JSON.parse(legadoImportText);
+      const list = Array.isArray(parsed) ? parsed : [parsed];
+      const imported = list
+        .filter((item) => item && typeof item === 'object')
+        .map((rule: any, index) => {
+          const name = rule.bookSourceName || `Legado 书源 ${index + 1}`;
+          const url = rule.bookSourceUrl || '';
+          return {
+            id: makeLegadoSourceId(name, url, index),
+            name,
+            type: 'legado' as const,
+            url,
+            enabled: rule.enabled !== false,
+            authMode: 'none' as const,
+            username: '',
+            password: '',
+            headerName: '',
+            headerValue: '',
+            searchTemplate: '',
+            preferFormat: ['epub' as const],
+            language: '',
+            legado: rule,
+          } satisfies BookSource;
+        })
+        .filter((source) => !!source.url);
+
+      if (imported.length === 0) {
+        throw new Error('没有识别到有效 Legado 书源，请确认 JSON 内含 bookSourceUrl');
+      }
+
+      setSources((prev) => {
+        const existed = new Set(prev.map((item) => `${item.type || 'opds'}|${item.url}|${item.name}`));
+        const next = imported.filter((item) => !existed.has(`${item.type}|${item.url}|${item.name}`));
+        return [...prev, ...next];
+      });
+      setLegadoImportText('');
+      showSuccess(`已导入 ${imported.length} 个 Legado 书源`, showAlert);
+    } catch (error) {
+      showError(error instanceof Error ? error.message : 'Legado JSON 解析失败', showAlert);
+    }
+  };
+
   const removeSource = (index: number) => {
     setSources((prev) => prev.filter((_, idx) => idx !== index));
+    setLegadoRuleDrafts((prev) => {
+      const next: Record<number, string> = {};
+      Object.entries(prev).forEach(([key, value]) => {
+        const numericKey = Number(key);
+        if (numericKey < index) next[numericKey] = value;
+        if (numericKey > index) next[numericKey - 1] = value;
+      });
+      return next;
+    });
     setEditingIndex((prev) => {
       if (prev === null) return prev;
       if (prev === index) return null;
@@ -12291,6 +12360,7 @@ const OPDSConfigComponent = ({
   const normalizeSource = (source: BookSource, index: number) => ({
     id: source.id?.trim() || `source_${index + 1}`,
     name: source.name?.trim() || `书源 ${index + 1}`,
+    type: source.type || 'opds',
     url: source.url?.trim() || '',
     enabled: source.enabled !== false,
     authMode: source.authMode || 'none',
@@ -12299,12 +12369,27 @@ const OPDSConfigComponent = ({
     headerName:
       source.authMode === 'header' ? source.headerName?.trim() || '' : '',
     headerValue: source.authMode === 'header' ? source.headerValue || '' : '',
-    searchTemplate: source.searchTemplate?.trim() || '',
+    searchTemplate: source.type === 'legado' ? '' : source.searchTemplate?.trim() || '',
     preferFormat: source.preferFormat?.length
       ? source.preferFormat
       : ['epub', 'pdf'],
     language: source.language?.trim() || '',
+    legado: source.type === 'legado' ? source.legado : undefined,
   });
+
+  const updateLegadoRuleJson = (index: number, value: string) => {
+    setLegadoRuleDrafts((prev) => ({ ...prev, [index]: value }));
+    try {
+      const rule = JSON.parse(value);
+      updateSource(index, {
+        legado: rule,
+        name: rule.bookSourceName || sources[index]?.name,
+        url: rule.bookSourceUrl || sources[index]?.url,
+      });
+    } catch {
+      // 允许用户继续编辑尚未完成的 JSON，保存前需修正为合法 JSON
+    }
+  };
 
   const buildConfig = () => ({
     Enabled: enabled,
@@ -12316,6 +12401,14 @@ const OPDSConfigComponent = ({
     await withLoading('saveOPDSConfig', async () => {
       try {
         if (!config) throw new Error('配置未加载');
+        for (const [index, draft] of Object.entries(legadoRuleDrafts)) {
+          if (!draft.trim()) continue;
+          try {
+            JSON.parse(draft);
+          } catch {
+            throw new Error(`第 ${Number(index) + 1} 个 Legado 书源 JSON 格式不正确`);
+          }
+        }
         const response = await fetch('/api/admin/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -12385,10 +12478,10 @@ const OPDSConfigComponent = ({
     <div className='space-y-6'>
       <div className='bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4'>
         <h3 className='text-sm font-medium text-amber-900 dark:text-amber-100 mb-2'>
-          关于电子书馆 / OPDS
+          关于电子书馆 / OPDS / Legado
         </h3>
         <div className='text-sm text-amber-800 dark:text-amber-200 space-y-1'>
-          <p>• 支持多书源，每个源可独立配置认证、搜索模板与默认格式偏好。</p>
+          <p>• 支持多书源，每个源可选择 OPDS 或 Legado，并独立配置规则。</p>
           <p>
             • 有些源只支持分类浏览，有些源只支持搜索，测试连接会自动探测能力。
           </p>
@@ -12449,6 +12542,34 @@ const OPDSConfigComponent = ({
           </button>
         </div>
 
+        <div className='rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-900/20'>
+          <div className='mb-2 flex items-center justify-between gap-3'>
+            <div>
+              <h4 className='text-sm font-medium text-amber-900 dark:text-amber-100'>
+                导入 Legado 书源
+              </h4>
+              <p className='mt-1 text-xs text-amber-800 dark:text-amber-200'>
+                粘贴阅读/Legado 导出的单个书源 JSON 或书源数组，导入后可逐个测试。
+              </p>
+            </div>
+            <button
+              type='button'
+              onClick={importLegadoSources}
+              disabled={!legadoImportText.trim()}
+              className={buttonStyles.primarySmall}
+            >
+              导入 Legado
+            </button>
+          </div>
+          <textarea
+            value={legadoImportText}
+            onChange={(e) => setLegadoImportText(e.target.value)}
+            placeholder='[{ "bookSourceName": "...", "bookSourceUrl": "...", "searchUrl": "...", "ruleSearch": { ... } }]'
+            rows={5}
+            className='w-full rounded-lg border border-amber-200 bg-white px-3 py-2 font-mono text-xs text-gray-900 dark:border-amber-800 dark:bg-gray-900 dark:text-gray-100'
+          />
+        </div>
+
         {sources.length === 0 && (
           <div className='rounded-lg border border-dashed border-gray-300 dark:border-gray-600 p-4 text-sm text-gray-500 dark:text-gray-400'>
             暂无 OPDS 书源，点击“添加书源”开始配置。
@@ -12501,6 +12622,14 @@ const OPDSConfigComponent = ({
                       <div className='space-y-2 text-xs text-gray-600 dark:text-gray-300'>
                         <div className='flex items-start justify-between gap-3'>
                           <span className='shrink-0 text-gray-500 dark:text-gray-400'>
+                            类型
+                          </span>
+                          <span className='min-w-0 text-right'>
+                            {source.type === 'legado' ? 'Legado' : 'OPDS'}
+                          </span>
+                        </div>
+                        <div className='flex items-start justify-between gap-3'>
+                          <span className='shrink-0 text-gray-500 dark:text-gray-400'>
                             地址
                           </span>
                           <span className='min-w-0 text-right break-all'>
@@ -12524,7 +12653,11 @@ const OPDSConfigComponent = ({
                             搜索
                           </span>
                           <span>
-                            {source.searchTemplate?.trim()
+                            {source.type === 'legado'
+                              ? source.legado?.searchUrl
+                                ? '已配置'
+                                : '未配置'
+                              : source.searchTemplate?.trim()
                               ? '已配置'
                               : '未配置'}
                           </span>
@@ -12587,6 +12720,27 @@ const OPDSConfigComponent = ({
                         <div className='grid grid-cols-1 gap-4'>
                           <div>
                             <label className='mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300'>
+                              书源类型
+                            </label>
+                            <select
+                              value={source.type || 'opds'}
+                              onChange={(e) => {
+                                const nextType = e.target.value as BookSource['type'];
+                                updateSource(index, {
+                                  type: nextType,
+                                  legado: nextType === 'legado'
+                                    ? source.legado || { bookSourceName: source.name, bookSourceUrl: source.url }
+                                    : undefined,
+                                });
+                              }}
+                              className='w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100'
+                            >
+                              <option value='opds'>OPDS</option>
+                              <option value='legado'>Legado</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className='mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300'>
                               书源 ID
                             </label>
                             <input
@@ -12620,14 +12774,35 @@ const OPDSConfigComponent = ({
                           <input
                             type='text'
                             value={source.url}
-                            onChange={(e) =>
-                              updateSource(index, { url: e.target.value })
-                            }
-                            placeholder='https://example.com/opds'
+                            onChange={(e) => {
+                              const url = e.target.value;
+                              updateSource(index, {
+                                url,
+                                legado: source.type === 'legado' ? { ...(source.legado || {}), bookSourceUrl: url } : source.legado,
+                              });
+                            }}
+                            placeholder={source.type === 'legado' ? 'https://example.com' : 'https://example.com/opds'}
                             className='w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100'
                           />
                         </div>
 
+                        {source.type === 'legado' ? (
+                          <div>
+                            <label className='mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300'>
+                              Legado 原始 JSON
+                            </label>
+                            <textarea
+                              value={legadoRuleDrafts[index] ?? JSON.stringify(source.legado || {}, null, 2)}
+                              onChange={(e) => updateLegadoRuleJson(index, e.target.value)}
+                              rows={10}
+                              className='w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100'
+                            />
+                            <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+                              修改后请保持合法 JSON；测试会检查搜索/章节规则是否存在。
+                            </p>
+                          </div>
+                        ) : (
+                        <>
                         <div className='grid grid-cols-1 gap-4'>
                           <div>
                             <label className='mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300'>
@@ -12751,6 +12926,8 @@ const OPDSConfigComponent = ({
                             </div>
                           </div>
                         )}
+                        </>
+                        )}
                       </div>
                     )}
                   </div>
@@ -12823,7 +13000,7 @@ const OPDSConfigComponent = ({
                                 {source.name || `书源 ${index + 1}`}
                               </div>
                               <div className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
-                                {source.language || '未设置语言'}
+                                {source.type === 'legado' ? 'Legado' : 'OPDS'} · {source.language || '未设置语言'}
                               </div>
                             </td>
                             <td className='px-4 py-3 text-sm text-gray-600 dark:text-gray-300'>
@@ -12845,7 +13022,11 @@ const OPDSConfigComponent = ({
                                 : '自定义 Header'}
                             </td>
                             <td className='px-4 py-3 text-sm text-gray-600 dark:text-gray-300'>
-                              {source.searchTemplate?.trim()
+                              {source.type === 'legado'
+                                ? source.legado?.searchUrl
+                                  ? '已配置'
+                                  : '未配置'
+                                : source.searchTemplate?.trim()
                                 ? '已配置'
                                 : '未配置'}
                             </td>
@@ -12935,6 +13116,27 @@ const OPDSConfigComponent = ({
                                   <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
                                     <div>
                                       <label className='mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300'>
+                                        书源类型
+                                      </label>
+                                      <select
+                                        value={source.type || 'opds'}
+                                        onChange={(e) => {
+                                          const nextType = e.target.value as BookSource['type'];
+                                          updateSource(index, {
+                                            type: nextType,
+                                            legado: nextType === 'legado'
+                                              ? source.legado || { bookSourceName: source.name, bookSourceUrl: source.url }
+                                              : undefined,
+                                          });
+                                        }}
+                                        className='w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100'
+                                      >
+                                        <option value='opds'>OPDS</option>
+                                        <option value='legado'>Legado</option>
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label className='mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300'>
                                         书源 ID
                                       </label>
                                       <input
@@ -12972,16 +13174,32 @@ const OPDSConfigComponent = ({
                                     <input
                                       type='text'
                                       value={source.url}
-                                      onChange={(e) =>
+                                      onChange={(e) => {
+                                        const url = e.target.value;
                                         updateSource(index, {
-                                          url: e.target.value,
-                                        })
-                                      }
-                                      placeholder='https://example.com/opds'
+                                          url,
+                                          legado: source.type === 'legado' ? { ...(source.legado || {}), bookSourceUrl: url } : source.legado,
+                                        });
+                                      }}
+                                      placeholder={source.type === 'legado' ? 'https://example.com' : 'https://example.com/opds'}
                                       className='w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100'
                                     />
                                   </div>
 
+                                  {source.type === 'legado' ? (
+                                    <div>
+                                      <label className='mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300'>
+                                        Legado 原始 JSON
+                                      </label>
+                                      <textarea
+                                        value={legadoRuleDrafts[index] ?? JSON.stringify(source.legado || {}, null, 2)}
+                                        onChange={(e) => updateLegadoRuleJson(index, e.target.value)}
+                                        rows={12}
+                                        className='w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100'
+                                      />
+                                    </div>
+                                  ) : (
+                                  <>
                                   <div className='grid grid-cols-1 gap-4 md:grid-cols-3'>
                                     <div>
                                       <label className='mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300'>
@@ -13109,6 +13327,8 @@ const OPDSConfigComponent = ({
                                       </div>
                                     </div>
                                   )}
+                                  </>
+                                  )}
                                 </div>
                               </td>
                             </tr>
@@ -13130,7 +13350,7 @@ const OPDSConfigComponent = ({
           disabled={isLoading('saveOPDSConfig')}
           className={buttonStyles.success}
         >
-          {isLoading('saveOPDSConfig') ? '保存中...' : '保存 OPDS 配置'}
+          {isLoading('saveOPDSConfig') ? '保存中...' : '保存电子书源配置'}
         </button>
       </div>
 

@@ -234,7 +234,7 @@ async function resolveOPDSConfig(): Promise<ResolvedOPDSConfig> {
   return {
     enabled,
     cacheTTL,
-    sources: (sources || []).filter((source) => !!source?.url && source.enabled !== false),
+    sources: (sources || []).filter((source) => !!source?.url && source.enabled !== false && (source.type || 'opds') === 'opds' && !source.legado),
   };
 }
 

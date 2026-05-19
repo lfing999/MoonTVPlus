@@ -695,6 +695,7 @@ export function configSelfCheck(adminConfig: AdminConfig): AdminConfig {
         return [{
           id: 'default',
           name: process.env.OPDS_NAME || '默认书源',
+          type: 'opds',
           url: envUrl,
           enabled: true,
           authMode: (process.env.OPDS_AUTH_MODE as 'none' | 'basic' | 'header' | undefined) || 'none',

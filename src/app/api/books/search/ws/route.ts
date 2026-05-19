@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { opdsClient } from '@/lib/opds.client';
+import { bookProvider } from '@/lib/book-provider';
 
 import { getAuthorizedBooksUsername } from '../../_utils';
 
@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
       };
 
       try {
-        const sources = await opdsClient.getSearchSources(sourceId);
+        const sources = await bookProvider.getSearchSources(sourceId);
         let completedSources = 0;
         let totalResults = 0;
         const failedSources: Array<{ sourceId: string; sourceName: string; error: string }> = [];
@@ -47,7 +47,7 @@ export async function GET(request: NextRequest) {
         await Promise.all(
           sources.map(async (source) => {
             try {
-              const result = await opdsClient.searchBooksSource(q, source);
+              const result = await bookProvider.searchBooksSource(q, source);
               completedSources += 1;
               totalResults += result.results.length;
               send({

@@ -287,6 +287,7 @@ export interface AdminConfig {
     Sources?: Array<{
       id: string;
       name: string;
+      type?: 'opds' | 'legado';
       url: string;
       enabled?: boolean;
       authMode?: 'none' | 'basic' | 'header';
@@ -297,6 +298,7 @@ export interface AdminConfig {
       searchTemplate?: string;
       preferFormat?: Array<'epub' | 'pdf'>;
       language?: string;
+      legado?: import('./book.types').LegadoBookSourceRule;
     }>;
     CacheTTL?: number;
   };

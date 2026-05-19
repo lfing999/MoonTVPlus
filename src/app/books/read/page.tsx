@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { saveBookReadRecord } from '@/lib/book.db.client';
-import { BookReadManifest, BookReadRecord, BookTtsProgress, BookTtsVoice } from '@/lib/book.types';
+import { BookChapter, BookChapterContent, BookReadManifest, BookReadRecord, BookTtsProgress, BookTtsVoice } from '@/lib/book.types';
 import {
   buildBookCacheKey,
   enforceBookCacheLimit,
@@ -368,6 +368,153 @@ async function downloadBookWithProgress(
   }
 
   return new Blob(chunks, { type: response.headers.get('content-type') || 'application/epub+zip' });
+}
+
+function ChapterReader({ manifest }: { manifest: BookReadManifest }) {
+  const searchParams = useSearchParams();
+  const initialChapterHref = searchParams.get('chapterHref') || '';
+  const [chapters, setChapters] = useState<BookChapter[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [chapter, setChapter] = useState<BookChapterContent | null>(null);
+  const [tocOpen, setTocOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const handleToggleChapters = () => setTocOpen((prev) => !prev);
+    window.addEventListener('books-read-toggle-chapters', handleToggleChapters);
+    return () => window.removeEventListener('books-read-toggle-chapters', handleToggleChapters);
+  }, []);
+
+  useEffect(() => {
+    if (!manifest.chaptersUrl && !manifest.acquisitionHref) return;
+    let cancelled = false;
+    setChapters([]);
+    setChapter(null);
+    setCurrentIndex(0);
+    setLoading(true);
+    setError('');
+    const url = manifest.chaptersUrl || `/api/books/read/chapters?sourceId=${encodeURIComponent(manifest.book.sourceId)}&bookId=${encodeURIComponent(manifest.book.id)}`;
+    fetch(url, { cache: 'no-store' })
+      .then(async (res) => {
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || '获取目录失败');
+        if (cancelled) return;
+        const list = (json.chapters || []) as BookChapter[];
+        setChapters(list);
+        const savedHref = initialChapterHref || manifest.lastRecord?.chapterHref || manifest.lastRecord?.locator?.href || manifest.lastRecord?.locator?.value || '';
+        const savedIndex = list.findIndex((item) => item.href === savedHref);
+        setCurrentIndex(savedIndex >= 0 ? savedIndex : 0);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message || '获取目录失败');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [initialChapterHref, manifest]);
+
+  useEffect(() => {
+    const item = chapters[currentIndex];
+    if (!item) {
+      if (chapters.length === 0) setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError('');
+    const params = new URLSearchParams({
+      sourceId: manifest.book.sourceId,
+      href: item.href,
+    });
+    if (manifest.acquisitionHref) params.set('tocHref', manifest.acquisitionHref);
+    fetch(`/api/books/read/chapter?${params.toString()}`, { cache: 'no-store' })
+      .then(async (res) => {
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || '获取章节失败');
+        setChapter({ ...(json as BookChapterContent), title: (json as BookChapterContent).title || item.title });
+        const progressPercent = chapters.length > 0 ? Math.round(((currentIndex + 1) / chapters.length) * 100) : 0;
+        const record: BookReadRecord = {
+          sourceId: manifest.book.sourceId,
+          sourceName: manifest.book.sourceName,
+          bookId: manifest.book.id,
+          title: manifest.book.title,
+          author: manifest.book.author,
+          cover: manifest.book.cover,
+          detailHref: manifest.book.detailHref,
+          acquisitionHref: manifest.acquisitionHref,
+          format: 'chapters',
+          locator: { type: 'chapter', value: item.href, href: item.href, chapterTitle: item.title },
+          chapterTitle: item.title,
+          chapterHref: item.href,
+          progressPercent,
+          saveTime: Date.now(),
+        };
+        void saveBookReadRecord(record.sourceId, record.bookId, record);
+      })
+      .catch((err) => setError(err.message || '获取章节失败'))
+      .finally(() => setLoading(false));
+  }, [chapters, currentIndex, manifest]);
+
+  if (error) return <div className='p-4 text-sm text-red-500'>{error}</div>;
+  if (loading && !chapter) return <div className='p-4 text-sm text-gray-500'>章节加载中...</div>;
+  if (!chapters.length) {
+    return (
+      <div className='mx-auto max-w-2xl p-4'>
+        <div className='rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200'>
+          暂无章节。该 Legado 源返回的是章节/图片接口，不是 EPUB 文件；如果详情接口显示章节数为 0，说明源站当前还没放出可读章节，请换一本有章节的结果再试。
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className='min-h-[calc(100vh-3.5rem)] bg-gray-50 dark:bg-black'>
+      {tocOpen && typeof document !== 'undefined' ? createPortal(
+        <div className='fixed inset-0 z-40 bg-black/30' onClick={() => setTocOpen(false)}>
+          <div
+            className='absolute right-0 top-0 h-screen w-[22rem] max-w-[88vw] overflow-y-auto border-l border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-950'
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className='sticky top-0 border-b border-gray-200 bg-white/95 p-4 backdrop-blur dark:border-gray-800 dark:bg-gray-950/95'>
+              <div className='text-base font-semibold'>章节目录</div>
+              <div className='mt-1 text-xs text-gray-500'>{manifest.book.title} · {chapters.length} 章</div>
+            </div>
+            <div className='space-y-2 p-4'>
+              {chapters.map((item, index) => {
+                const active = index === currentIndex;
+                return (
+                  <button
+                    key={`${item.href}-${item.order}-${index}`}
+                    onClick={() => {
+                      setCurrentIndex(index);
+                      setTocOpen(false);
+                    }}
+                    className={`block w-full rounded-2xl px-4 py-3 text-left text-sm transition ${active ? 'bg-sky-600 text-white' : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900'}`}
+                    title={item.title}
+                  >
+                    <span className='block truncate'>{item.title}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>,
+        document.body
+      ) : null}
+
+      <div className='mx-auto max-w-3xl px-4 py-6'>
+        <article className='text-lg leading-9 text-gray-800 dark:text-gray-100'>
+          {loading ? '加载中...' : chapter?.content?.includes('<img')
+            ? <div className='space-y-2' dangerouslySetInnerHTML={{ __html: chapter.content }} />
+            : <div className='whitespace-pre-wrap'>{chapter?.content || '本章暂无内容'}</div>}
+        </article>
+        <div className='mt-5 flex justify-between gap-3'>
+          <button disabled={currentIndex <= 0} onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))} className='rounded-2xl border border-gray-200 px-4 py-2 text-sm disabled:text-gray-400 dark:border-gray-700'>上一章</button>
+          <button disabled={currentIndex >= chapters.length - 1} onClick={() => setCurrentIndex((prev) => Math.min(chapters.length - 1, prev + 1))} className='rounded-2xl bg-sky-600 px-4 py-2 text-sm text-white disabled:bg-gray-300'>下一章</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 
@@ -1174,7 +1321,7 @@ export default function BookReadPage() {
             sourceId: manifest.book.sourceId,
             bookId: manifest.book.id,
             title: manifest.book.title,
-            format: manifest.format,
+            format: 'epub',
             acquisitionHref: manifest.acquisitionHref || `${manifest.book.sourceId}:${manifest.book.id}:${manifest.format}`,
             blob,
             size: blob.size,
@@ -1653,6 +1800,10 @@ export default function BookReadPage() {
         </div>
       </div>
     );
+  }
+
+  if (manifest.format === 'chapters') {
+    return <ChapterReader manifest={manifest} />;
   }
 
   if (manifest.format === 'pdf') {

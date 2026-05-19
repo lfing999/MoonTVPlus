@@ -1,16 +1,71 @@
 export interface BookSourceCapabilities {
   searchSupported: boolean;
   catalogSupported: boolean;
-  searchMode: 'opds' | 'template' | 'disabled';
-  catalogMode: 'navigation' | 'acquisition' | 'flat' | 'disabled';
+  searchMode: 'opds' | 'template' | 'legado' | 'disabled';
+  catalogMode: 'navigation' | 'acquisition' | 'flat' | 'legado' | 'disabled';
   acquisitionTypes: string[];
   lastCheckedAt?: number;
   lastError?: string;
 }
 
+export interface LegadoRuleSearch {
+  bookList?: string;
+  name?: string;
+  author?: string;
+  intro?: string;
+  coverUrl?: string;
+  bookUrl?: string;
+  kind?: string;
+  lastChapter?: string;
+}
+
+export interface LegadoRuleBookInfo {
+  name?: string;
+  author?: string;
+  intro?: string;
+  coverUrl?: string;
+  tocUrl?: string;
+  kind?: string;
+  lastChapter?: string;
+}
+
+export interface LegadoRuleToc {
+  chapterList?: string;
+  chapterName?: string;
+  chapterUrl?: string;
+  isVip?: string;
+  isPay?: string;
+}
+
+export interface LegadoRuleContent {
+  content?: string;
+  nextContentUrl?: string;
+}
+
+export interface LegadoBookSourceRule {
+  bookSourceName?: string;
+  bookSourceUrl?: string;
+  bookSourceGroup?: string;
+  enabled?: boolean;
+  enabledExplore?: boolean;
+  header?: string | Record<string, string>;
+  loginUrl?: string;
+  searchUrl?: string;
+  bookInfoUrl?: string;
+  tocUrl?: string;
+  chapterUrl?: string;
+  ruleSearch?: LegadoRuleSearch;
+  ruleBookInfo?: LegadoRuleBookInfo;
+  ruleToc?: LegadoRuleToc;
+  ruleContent?: LegadoRuleContent;
+  customOrder?: number;
+  weight?: number;
+}
+
 export interface BookSource {
   id: string;
   name: string;
+  type?: 'opds' | 'legado';
   url: string;
   enabled?: boolean;
   authMode?: 'none' | 'basic' | 'header';
@@ -21,6 +76,7 @@ export interface BookSource {
   searchTemplate?: string;
   preferFormat?: Array<'epub' | 'pdf'>;
   language?: string;
+  legado?: LegadoBookSourceRule;
   capabilities?: BookSourceCapabilities;
 }
 
@@ -87,7 +143,7 @@ export interface BookSearchResult {
 }
 
 export interface BookLocator {
-  type: 'epub-cfi' | 'pdf-page' | 'href';
+  type: 'epub-cfi' | 'pdf-page' | 'href' | 'chapter';
   value: string;
   href?: string;
   chapterTitle?: string;
@@ -100,7 +156,7 @@ export interface BookShelfItem {
   title: string;
   author?: string;
   cover?: string;
-  format?: 'epub' | 'pdf';
+  format?: 'epub' | 'pdf' | 'chapters';
   detailHref?: string;
   acquisitionHref?: string;
   progressPercent?: number;
@@ -118,7 +174,7 @@ export interface BookReadRecord {
   title: string;
   author?: string;
   cover?: string;
-  format: 'epub' | 'pdf';
+  format: 'epub' | 'pdf' | 'chapters';
   detailHref?: string;
   acquisitionHref?: string;
   locator: BookLocator;
@@ -159,10 +215,27 @@ export interface BookTtsProgress {
 
 export interface BookReadManifest {
   book: BookDetail;
-  format: 'epub' | 'pdf';
-  fileUrl: string;
+  format: 'epub' | 'pdf' | 'chapters';
+  fileUrl?: string;
+  chaptersUrl?: string;
   acquisitionHref?: string;
   cacheKey?: string;
   coverUrl?: string;
   lastRecord?: BookReadRecord | null;
+}
+
+export interface BookChapter {
+  id: string;
+  title: string;
+  href: string;
+  order: number;
+}
+
+export interface BookChapterContent {
+  id: string;
+  title: string;
+  href: string;
+  content: string;
+  nextHref?: string;
+  previousHref?: string;
 }
